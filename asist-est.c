@@ -20,42 +20,29 @@ sem_t siesta;
 pthread_mutex_t esperaMutex = PTHREAD_MUTEX_INITIALIZER;   //Controla el acceso a la lista de espera
 pthread_mutex_t atencionMutex = PTHREAD_MUTEX_INITIALIZER; //Controla el tiempo de atención para sincronizar
 pthread_mutex_t vecesMutex = PTHREAD_MUTEX_INITIALIZER;    //Controla el acceso a la disminución de veces que se ejecuta (horario de atencion)
-pthread_mutex_t cantEstMutex = PTHREAD_MUTEX_INITIALIZER; 
+pthread_mutex_t cantEstMutex = PTHREAD_MUTEX_INITIALIZER;  
+pthread_mutex_t duranteAtendMutex = PTHREAD_MUTEX_INITIALIZER; 
 
 //Verifica si hay estudiantes esperando
 //Nunca un id es 0, por lo que no existe un estudiante con ese id
 bool comprobarEspera()
-{
-    pthread_mutex_lock(&esperaMutex);
-    int est = espera[0];
-    pthread_mutex_unlock(&esperaMutex);
-   
-    if (est!= 0){
+{   
 
+    if (espera[0] != 0)
         return true;
-    }
-   
     return false;
     
 }
 
 //Retorna el estudiante que esta al inicio y corre los campos
 //Retorna el id del estudiante (nunca un id es 0)
-int obtenerEstAtend()
+long obtenerEstAtend()
 {
-    pthread_mutex_lock(&esperaMutex);
-    int tmp = espera[0];
-    pthread_mutex_unlock(&esperaMutex);
+    long tmp = espera[0];
 
-    for (int i = 0; i < 2; i++){
-        pthread_mutex_lock(&esperaMutex);
-        espera[i] = espera[i + 1];
-        pthread_mutex_unlock(&esperaMutex);
-    }
-
-    pthread_mutex_lock(&esperaMutex);
-    espera[2] = 0;
-    pthread_mutex_unlock(&esperaMutex);
+    espera[0] = espera[1];
+    espera[1] = espera[2];
+    espera[2] = 0; 
     
     return tmp;
 }
@@ -63,14 +50,11 @@ int obtenerEstAtend()
 //Se coloca al estudiante en la primer posicion, puesto que este despierta al asistente.
 bool despertar(long idEst)
 {
-    pthread_mutex_lock(&esperaMutex);
     espera[0] = idEst;
-    pthread_mutex_unlock(&esperaMutex);
-
-    sem_wait(&siesta);
+    
     siestaBandera = false;
-    sem_post(&siesta);
 
+    sleep(0.5);
     printf("Estudiante %ld despertando a asistente...\n", idEst);
 
     return true;
@@ -81,25 +65,16 @@ bool despertar(long idEst)
 //Si el asistente está duermiendo, lo despierta
 bool buscAtenc(long idEst)
 {
-    sem_wait(&siesta);
-    bool bandAux = siestaBandera;
-    sem_post(&siesta);
 
-    if (!bandAux)
+    if (!siestaBandera)
     {
        
         for (int i = 0; i < 3; i++)
         {
-            pthread_mutex_lock(&esperaMutex);
-            int est = espera[i];
-            pthread_mutex_unlock(&esperaMutex);
 
-            if (est == 0)
+            if (espera[i] == 0)
             {
-
-                pthread_mutex_lock(&esperaMutex);
                 espera[i] = idEst;
-                pthread_mutex_unlock(&esperaMutex);
                 return true;
             }
            
@@ -117,7 +92,7 @@ bool buscAtenc(long idEst)
 int tiemAten()
 {
     srand(time(NULL));
-    return 5 + rand() % 10;
+    return 3 + rand() % 7;
 }
 
 //Rifa quien sera el proximo en ser atendido (random id de estudiantes)
@@ -125,52 +100,57 @@ long rifaAten()
 {
     srand(time(NULL));
 
-    pthread_mutex_lock(&cantEstMutex);
-    int can = cantEst;
-    pthread_mutex_unlock(&cantEstMutex);
-
-    return (long)1 + rand() % can;
+    return (long)1 + rand() % cantEst;
 }
 
 void *thread_asistente()
 {
-    int i = 1;
 
-    pthread_mutex_lock(&vecesMutex);
-    int tiempo = timeA;
-    pthread_mutex_unlock(&vecesMutex);
-
-    while (tiempo > 0)
+    while (1)
     {
 
+        pthread_mutex_lock(&vecesMutex);
+        if(timeA <= 0){
+            pthread_mutex_unlock(&vecesMutex);
+            break;
+        }
+        pthread_mutex_unlock(&vecesMutex);
+
+        pthread_mutex_lock(&esperaMutex);
         if (comprobarEspera()) //Si hay un estudiante esperando
         {
 
-            pthread_mutex_lock(&atencionMutex);
-            idEstAten = obtenerEstAtend(); //Lo obtiene y se atiende
-            pthread_mutex_unlock(&atencionMutex);
+            int est = obtenerEstAtend();
+            pthread_mutex_unlock(&esperaMutex); //Se libera espera mutex
+
+            pthread_mutex_lock(&duranteAtendMutex); //Se hace lock para que el thread no continue hasta terminar el tiempo de atencion
 
             pthread_mutex_lock(&atencionMutex);
+            idEstAten = est; //Lo obtiene y se atiende
+            pthread_mutex_unlock(&atencionMutex); // Se libera el lock de atencion para asegurar que los thread tengan acceso a el id actualzado
+
+            pthread_mutex_lock(&atencionMutex); //Se hace lock de antencion dentro para asegurar que los print de aca se ejecuten antes de que el thread en atención continue
+            sleep(0.5);
             printf("Asistente inicia atencion a estudiante %ld...\n", idEstAten);
             pthread_mutex_unlock(&atencionMutex);
 
-            pthread_mutex_lock(&atencionMutex);
-            sleep(tiemAten()); //Bloquea para que el estudiante no siga.
-            pthread_mutex_unlock(&atencionMutex);
+            sleep(tiemAten()); //Espera para que el estudiante no siga. (tiempo de atencion)
 
-            pthread_mutex_lock(&atencionMutex);
+            pthread_mutex_lock(&atencionMutex); //Se hace lock de antencion dentro para asegurar que los print de aca se ejecuten antes de que el thread en atención continue
+            sleep(0.5);
             printf("Asistente finaliza atencion a estudiante %ld...\n", idEstAten);
             pthread_mutex_unlock(&atencionMutex);
 
-            pthread_mutex_lock(&atencionMutex);
-            idEstAten = 0;
-            pthread_mutex_unlock(&atencionMutex);
+            pthread_mutex_unlock(&duranteAtendMutex);
+            
 
-            sleep(0.1);
+            sleep(2);
             
         }
         else
         {
+            pthread_mutex_unlock(&esperaMutex);
+
             //Pone a dormir al asistente
             sem_wait(&siesta);
             siestaBandera = true;
@@ -178,28 +158,22 @@ void *thread_asistente()
 
             printf("Asistente va a tomar una siesta...\n");
 
-            sem_wait(&siesta);
-            bool bandAux = siestaBandera;
-            sem_post(&siesta);
-
-            while (bandAux && tiempo > 0)
+            while (1)
             {
-                sleep(0.1);
-
-                sem_wait(&siesta);
-                bandAux = siestaBandera;
-                sem_post(&siesta);
-
+                
                 pthread_mutex_lock(&vecesMutex);
-                tiempo = timeA;
+                sem_wait(&siesta);
+                if(!siestaBandera || timeA <= 0){
+                    sem_post(&siesta);
+                    pthread_mutex_unlock(&vecesMutex);
+                    break;
+                }
+                sem_post(&siesta);
                 pthread_mutex_unlock(&vecesMutex);
 
             }
 
       }
-        pthread_mutex_lock(&vecesMutex);
-        tiempo = timeA;
-        pthread_mutex_unlock(&vecesMutex);
 
     }
     printf("El horario de atencion ha finalizado...\n");
@@ -208,66 +182,76 @@ void *thread_asistente()
 void *thread_estudiante(void *idPtr)
 {
     long id = (long)idPtr;
-    int i = 1;
 
-    pthread_mutex_lock(&vecesMutex);
-    int tiempo = timeA;
-    pthread_mutex_unlock(&vecesMutex);
-
-    while (tiempo > 0)
+    while (1)
     {
 
+        pthread_mutex_lock(&vecesMutex);
+        if(timeA <= 0){
+            pthread_mutex_unlock(&vecesMutex);
+            break;
+        }
+        pthread_mutex_unlock(&vecesMutex);
+
+        sleep(0.5);
         printf("Estudiante %ld programando...\n", id);
 
-        //sleep(2);
-
+        pthread_mutex_lock(&cantEstMutex);
         if (rifaAten() == id) //Se realiza la rifa para buscar atencion
         {
+            pthread_mutex_unlock(&cantEstMutex);
+
+            sleep(0.5);
             printf("Estudiante %ld buscando atencion...\n", id);
+
+            pthread_mutex_lock(&esperaMutex);
+            sem_wait(&siesta);
             if (buscAtenc(id)) //Se pone en cola para la atencion si hay campo
             {
+                sem_post(&siesta);
+                pthread_mutex_unlock(&esperaMutex);
+                  
                 //Puede que en el momento que se ponga en cola no esté siendo atendido, espera a serlo.
                 //Por lo que mientras que el estudiante que se esté atendiendo sea diferente de el(idEstAten)
                 //Va a esperar siempre y cuando haya tiempo para atenderse
 
-                pthread_mutex_lock(&atencionMutex);
-                int estAt = idEstAten;
-                pthread_mutex_unlock(&atencionMutex);
-
-                while (estAt != id && tiempo > 0)
-                {
-
-                    printf("Estudiante %ld esperando atencion...\n", id);
-                    //sleep(5);
+                while(1) { 
 
                     pthread_mutex_lock(&vecesMutex);
-                    tiempo = timeA;
-                    pthread_mutex_unlock(&vecesMutex);
-
                     pthread_mutex_lock(&atencionMutex);
-                    estAt = idEstAten;
-                    pthread_mutex_unlock(&atencionMutex);
+                    if(idEstAten == id || timeA <= 0){
 
-                    sleep(5);
+                        pthread_mutex_unlock(&atencionMutex);
+                        pthread_mutex_unlock(&vecesMutex);
+
+                        break;
+
+                    }
+                    pthread_mutex_unlock(&atencionMutex);
+                    pthread_mutex_unlock(&vecesMutex);
 
                 }
 
-                pthread_mutex_lock(&atencionMutex);
+                pthread_mutex_lock(&duranteAtendMutex);
                 //Cuando ya está haciedo atendido termina el bucle, pero debe esperar que el asistente
-                //libere el espacio de atención
-                pthread_mutex_unlock(&atencionMutex);
+                //libere el espacio de atención.
+                pthread_mutex_unlock(&duranteAtendMutex);
             }
             else
             {
-                printf("Estudiante %ld regresera mas tarde a buscar atencion...\n", id);
-                sleep(1.5);
+                sem_post(&siesta);
+                pthread_mutex_unlock(&esperaMutex);
+                
+                sleep(0.5);
+                printf("Estudiante %ld regresara mas tarde a buscar atencion...\n", id);
             }
         } else {
-            sleep(1.5);
+            pthread_mutex_unlock(&cantEstMutex);
         }
-        
+
+        sleep(1.5);
         pthread_mutex_lock(&vecesMutex);
-        tiempo = --timeA; //Se disminuye el tiempo de atencion (horario)
+        timeA--; //Se disminuye el tiempo de atencion (horario)
         pthread_mutex_unlock(&vecesMutex);
     }
 }
